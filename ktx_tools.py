@@ -530,6 +530,7 @@ def run_toktx(input_path, output_path, options=None):
             - quality: 1-255 for ETC1S, 0-4 for UASTC
             - mipmaps: bool
             - astc_block_size: '4x4', '5x5', '6x6', '8x8' (for ASTC)
+            - is_normal: True if texture is normal map (linear)
 
     Returns:
         tuple: (success: bool, error_message: str or None)
@@ -569,6 +570,11 @@ def run_toktx(input_path, output_path, options=None):
             cmd.extend(['--encode', 'etc1s'])
             quality = options.get('quality', 128)
             cmd.extend(['--qlevel', str(quality)])
+    
+    # Normal
+    if options.get('is_normal', False):
+        cmd.extend(['--target_type', 'RG'])
+        cmd.extend(['--assign_oetf', 'linear'])
 
     # Mipmaps
     if options.get('mipmaps', False):

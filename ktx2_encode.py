@@ -190,7 +190,7 @@ def save_blender_image_to_temp(blender_image, export_settings):
         return None
 
 
-def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_level, generate_mipmaps, export_settings, astc_block_size='6x6'):
+def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_level, generate_mipmaps, export_settings, astc_block_size='6x6', is_normal=False):
     """
     Encode a glTF image to KTX2 format.
 
@@ -202,6 +202,7 @@ def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_le
         generate_mipmaps: Whether to generate mipmaps
         export_settings: Export settings dict
         astc_block_size: ASTC block size ('4x4', '5x5', '6x6', '8x8')
+        is_normal: True if texture is normal map (linear)
 
     Returns:
         gltf2_io.Image: New Image object with KTX2 data, or None on failure
@@ -229,6 +230,7 @@ def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_le
             'quality': quality_level if compression_mode == 'ETC1S' else min(quality_level // 64, 4),
             'mipmaps': generate_mipmaps,
             'astc_block_size': astc_block_size,
+            'is_normal': is_normal,
         }
 
         # Log the target format for debugging

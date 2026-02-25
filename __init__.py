@@ -311,6 +311,16 @@ class glTF2ExportUserExtension:
         if gltf2_texture.source is None:
             return
 
+        # Get texture info
+        is_normal = False
+        for wrapper in blender_shader_sockets:
+            socket = wrapper.socket
+            if not socket.links:
+                continue
+            node = socket.links[0].from_node
+            if node.type == 'NORMAL_MAP':
+                is_normal = True
+                
         from . import ktx2_encode
 
         # Get the source image
@@ -329,7 +339,8 @@ class glTF2ExportUserExtension:
                 self.properties.quality_level,
                 self.properties.generate_mipmaps,
                 export_settings,
-                astc_block_size=self.properties.astc_block_size
+                astc_block_size=self.properties.astc_block_size,
+                is_normal=is_normal
             )
             if ktx2_image is None:
                 export_settings['log'].warning(
