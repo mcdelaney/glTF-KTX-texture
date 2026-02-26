@@ -581,7 +581,7 @@ def run_toktx(input_path, output_path, options=None):
     
     # Transfer function
     oetf = options.get('oetf', 'srgb')
-    cmd.extend(['--convert_oetf', oetf])
+    cmd.extend(['--assign_oetf', oetf])
 
     # Target type
     target_type = options.get('target_type', 'RGBA')
