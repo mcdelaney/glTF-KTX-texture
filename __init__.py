@@ -406,11 +406,11 @@ class glTF2ExportUserExtension:
             elif socket.name == 'Alpha':
                 channels += 1
             elif socket.name == "Normal":
-                channels += 3
+                channels = 3
             elif socket.name == "Metallic":
-                channels += 1
+                channels = 3
             elif socket.name == "Roughness":
-                channels += 1
+                channels = 3
             socket_names.append(socket.name)
 
         # Get user settings
