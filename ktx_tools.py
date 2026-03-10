@@ -332,10 +332,14 @@ def extract_windows_installer(installer_path, tools_dir):
                     timeout=120
                 )
 
-                # Find the bin directory
+                # Find executables and DLLs
                 for root, dirs, files in os.walk(tmpdir):
                     for filename in files:
                         if filename in ('toktx.exe', 'ktx.exe', 'ktxsc.exe', 'ktxinfo.exe'):
+                            src = Path(root) / filename
+                            dst = tools_dir / filename
+                            shutil.copy2(src, dst)
+                        elif filename.lower().endswith('.dll'):
                             src = Path(root) / filename
                             dst = tools_dir / filename
                             shutil.copy2(src, dst)
@@ -503,9 +507,9 @@ def get_tool_environment():
         else:
             env['LD_LIBRARY_PATH'] = str(lib_dir)
     elif os_name == 'Windows':
-        # Add lib directory to PATH for DLLs
+        # Add tools and lib directories to PATH for DLLs
         current_path = env.get('PATH', '')
-        env['PATH'] = f"{lib_dir};{current_path}"
+        env['PATH'] = f"{tools_dir};{lib_dir};{current_path}"
     elif os_name == 'Darwin':
         # Add lib directory to DYLD_LIBRARY_PATH
         current_dyld_path = env.get('DYLD_LIBRARY_PATH', '')
