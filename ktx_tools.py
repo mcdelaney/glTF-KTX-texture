@@ -29,9 +29,22 @@ from pathlib import Path
 
 # KTX-Software version to download
 KTX_VERSION = "4.4.2"
+COMPRESSONATOR_VERSION = "4.5.52"
 
 # Base URL for downloading
 GITHUB_BASE = f"https://github.com/KhronosGroup/KTX-Software/releases/download/v{KTX_VERSION}"
+COMPRESSONATOR_BASE = f"https://github.com/GPUOpen-Tools/compressonator/releases/download/V{COMPRESSONATOR_VERSION}"
+KTX2_MAGIC = bytes([0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A])
+
+KTX2_SRGB_VKFORMAT_MAP = {
+    131: 132,  # VK_FORMAT_BC1_RGB_UNORM_BLOCK -> VK_FORMAT_BC1_RGB_SRGB_BLOCK
+    133: 134,  # VK_FORMAT_BC1_RGBA_UNORM_BLOCK -> VK_FORMAT_BC1_RGBA_SRGB_BLOCK
+    135: 136,  # VK_FORMAT_BC2_UNORM_BLOCK -> VK_FORMAT_BC2_SRGB_BLOCK
+    137: 138,  # VK_FORMAT_BC3_UNORM_BLOCK -> VK_FORMAT_BC3_SRGB_BLOCK
+    145: 146,  # VK_FORMAT_BC7_UNORM_BLOCK -> VK_FORMAT_BC7_SRGB_BLOCK
+}
+
+KHR_DF_TRANSFER_SRGB = 2
 
 
 def get_platform_info():
@@ -98,6 +111,29 @@ def get_download_info():
     return None, None, None
 
 
+def get_compressonator_download_info():
+    """
+    Get the download URL and archive type for CompressonatorCLI on this platform.
+
+    Returns:
+        tuple: (url, archive_type) or (None, None) if unsupported.
+    """
+    os_name, arch = get_platform_info()
+
+    if arch != 'x86_64':
+        return None, None
+
+    if os_name == 'Windows':
+        filename = f"compressonatorcli-{COMPRESSONATOR_VERSION}-win64.zip"
+        return f"{COMPRESSONATOR_BASE}/{filename}", 'zip'
+
+    if os_name == 'Linux':
+        filename = f"compressonatorcli-{COMPRESSONATOR_VERSION}-Linux.tar.gz"
+        return f"{COMPRESSONATOR_BASE}/{filename}", 'tar.gz'
+
+    return None, None
+
+
 def get_tools_directory():
     """
     Get the directory where KTX tools should be stored.
@@ -109,6 +145,30 @@ def get_tools_directory():
     addon_dir = Path(__file__).parent
     tools_dir = addon_dir / "bin"
     return tools_dir
+
+
+def get_compressonator_directory():
+    """
+    Get the directory where CompressonatorCLI should be stored.
+
+    Returns:
+        Path: Directory path for the extracted CompressonatorCLI bundle
+    """
+    return get_tools_directory() / "compressonator"
+
+
+def find_executable_in_directory(root_dir, candidate_names):
+    """Search a directory tree for the first matching executable."""
+    root_dir = Path(root_dir)
+    if not root_dir.exists():
+        return None
+
+    for candidate_name in candidate_names:
+        for match in root_dir.rglob(candidate_name):
+            if match.is_file() and os.access(match, os.X_OK):
+                return match
+
+    return None
 
 
 def get_tool_path(tool_name):
@@ -146,6 +206,58 @@ def are_tools_installed():
     """
     toktx = get_tool_path('toktx')
     return toktx is not None
+
+
+def get_compressonator_path():
+    """
+    Get the full path to the Compressonator CLI executable.
+
+    Returns:
+        Path: Full path to the executable, or None if not found
+    """
+    tools_dir = get_tools_directory()
+    compressonator_dir = get_compressonator_directory()
+    os_name, _ = get_platform_info()
+
+    candidate_paths = []
+
+    if os_name == 'Windows':
+        candidate_names = ('CompressonatorCLI.exe', 'compressonatorcli.exe')
+        program_files = os.environ.get('ProgramFiles', r'C:\Program Files')
+        candidate_paths.extend([
+            Path(program_files) / 'Compressonator' / 'CompressonatorCLI.exe',
+            Path(program_files) / 'Compressonator' / 'bin' / 'CLI' / 'CompressonatorCLI.exe',
+            tools_dir / 'CompressonatorCLI.exe',
+            compressonator_dir / 'CompressonatorCLI.exe',
+            compressonator_dir / 'bin' / 'CLI' / 'CompressonatorCLI.exe',
+        ])
+    else:
+        candidate_names = ('CompressonatorCLI', 'compressonatorcli')
+        candidate_paths.extend([
+            tools_dir / 'CompressonatorCLI',
+            compressonator_dir / 'CompressonatorCLI',
+            compressonator_dir / 'bin' / 'CLI' / 'CompressonatorCLI',
+        ])
+
+    for candidate in candidate_paths:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return candidate
+
+    local_match = find_executable_in_directory(compressonator_dir, candidate_names)
+    if local_match:
+        return local_match
+
+    for candidate_name in candidate_names:
+        found = shutil.which(candidate_name)
+        if found:
+            return Path(found)
+
+    return None
+
+
+def are_bcn_tools_installed():
+    """Check if the BCn encoder backend is available."""
+    return get_compressonator_path() is not None
 
 
 def download_file(url, dest_path, progress_callback=None):
@@ -210,6 +322,12 @@ def download_file(url, dest_path, progress_callback=None):
             if str(dest_path).endswith('.tar.bz2') and not header.startswith(b'BZ'):
                 print(f"Downloaded file does not appear to be bzip2 (header: {header[:4]})")
                 return False
+            if str(dest_path).endswith('.tar.gz') and header[:2] != b'\x1f\x8b':
+                print(f"Downloaded file does not appear to be gzip (header: {header[:4]})")
+                return False
+            if str(dest_path).endswith('.zip') and header[:2] != b'PK':
+                print(f"Downloaded file does not appear to be zip (header: {header[:4]})")
+                return False
 
         print(f"Download complete: {downloaded // 1024}KB")
         return True
@@ -221,6 +339,25 @@ def download_file(url, dest_path, progress_callback=None):
     except (urllib.error.URLError, OSError) as e:
         print(f"Download failed: {e}")
         return False
+
+
+def get_seven_zip_path():
+    """Get a usable 7-Zip executable path on Windows, or None if unavailable."""
+    seven_zip_paths = [
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+        "7z",
+    ]
+
+    for path in seven_zip_paths:
+        try:
+            result = subprocess.run([path, '--help'], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return path
+        except (subprocess.SubprocessError, FileNotFoundError):
+            continue
+
+    return None
 
 
 def extract_linux_archive(archive_path, tools_dir):
@@ -305,22 +442,7 @@ def extract_windows_installer(installer_path, tools_dir):
     """
     tools_dir.mkdir(parents=True, exist_ok=True)
 
-    # Try using 7z to extract (common on Windows)
-    seven_zip_paths = [
-        r"C:\Program Files\7-Zip\7z.exe",
-        r"C:\Program Files (x86)\7-Zip\7z.exe",
-        "7z",  # If in PATH
-    ]
-
-    seven_zip = None
-    for path in seven_zip_paths:
-        try:
-            result = subprocess.run([path, '--help'], capture_output=True, timeout=5)
-            if result.returncode == 0:
-                seven_zip = path
-                break
-        except (subprocess.SubprocessError, FileNotFoundError):
-            continue
+    seven_zip = get_seven_zip_path()
 
     if seven_zip:
         # Extract using 7z
@@ -351,6 +473,54 @@ def extract_windows_installer(installer_path, tools_dir):
     # Fallback: Try running installer silently (not ideal)
     # For better UX, we should provide manual instructions
     return False
+
+
+def extract_compressonator_windows_archive(archive_path, target_dir):
+    """Extract the Windows CompressonatorCLI archive into the target directory."""
+    import zipfile
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with zipfile.ZipFile(archive_path, 'r') as archive:
+            archive.extractall(path=target_dir)
+    except zipfile.BadZipFile as e:
+        return False, f"Invalid CompressonatorCLI zip archive: {e}"
+    except OSError as e:
+        return False, f"Failed to extract CompressonatorCLI: {e}"
+
+    exe_names = ('CompressonatorCLI.exe', 'compressonatorcli.exe')
+    if not find_executable_in_directory(target_dir, exe_names):
+        return False, "CompressonatorCLI was extracted but the executable could not be found."
+
+    return True, None
+
+
+def extract_compressonator_linux_archive(archive_path, target_dir):
+    """Extract the full CompressonatorCLI Linux bundle into the target directory."""
+    import tarfile
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        tar.extractall(path=target_dir)
+
+    for binary_name in ('CompressonatorCLI', 'compressonatorcli'):
+        for match in target_dir.rglob(binary_name):
+            try:
+                os.chmod(match, 0o755)
+            except OSError:
+                pass
+
+    exe_names = ('CompressonatorCLI', 'compressonatorcli')
+    if not find_executable_in_directory(target_dir, exe_names):
+        return False, "CompressonatorCLI was extracted but the executable could not be found."
+
+    return True, None
 
 
 def extract_macos_package(pkg_path, tools_dir):
@@ -487,6 +657,67 @@ def install_tools(progress_callback=None):
     return True, None
 
 
+def install_compressonator(progress_callback=None):
+    """
+    Download and install CompressonatorCLI for BCn encoding.
+
+    Args:
+        progress_callback: Optional callback(status_message, progress_percent)
+
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    os_name, arch = get_platform_info()
+    url, archive_type = get_compressonator_download_info()
+
+    if url is None:
+        return False, f"Automatic CompressonatorCLI download is not supported on {os_name} {arch}."
+
+    target_dir = get_compressonator_directory()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        archive_path = tmpdir / f"compressonator.{archive_type}"
+
+        if progress_callback:
+            progress_callback("Downloading BCn tools...", 0)
+
+        def download_progress(downloaded, total):
+            if progress_callback:
+                percent = int(downloaded / total * 60)
+                progress_callback(f"Downloading... {downloaded // 1024 // 1024}MB", percent)
+
+        if not download_file(url, archive_path, download_progress):
+            return False, "Failed to download CompressonatorCLI. Check your internet connection."
+
+        if progress_callback:
+            progress_callback("Extracting BCn tools...", 60)
+
+        try:
+            if archive_type == 'zip':
+                success, error = extract_compressonator_windows_archive(archive_path, target_dir)
+            elif archive_type == 'tar.gz':
+                success, error = extract_compressonator_linux_archive(archive_path, target_dir)
+            else:
+                return False, f"Unknown CompressonatorCLI archive type: {archive_type}"
+        except Exception as e:
+            return False, f"Extraction failed: {str(e)}"
+
+        if not success:
+            return False, error
+
+    if progress_callback:
+        progress_callback("Verifying BCn tools...", 90)
+
+    if not are_bcn_tools_installed():
+        return False, "CompressonatorCLI was extracted but verification failed."
+
+    if progress_callback:
+        progress_callback("BCn tools installed!", 100)
+
+    return True, None
+
+
 def get_tool_environment():
     """
     Get environment variables for running KTX tools.
@@ -503,22 +734,167 @@ def get_tool_environment():
         # Add lib directory to LD_LIBRARY_PATH
         current_ld_path = env.get('LD_LIBRARY_PATH', '')
         if current_ld_path:
-            env['LD_LIBRARY_PATH'] = f"{lib_dir}:{current_ld_path}"
+            env['LD_LIBRARY_PATH'] = f"{lib_dir}{os.pathsep}{current_ld_path}"
         else:
             env['LD_LIBRARY_PATH'] = str(lib_dir)
     elif os_name == 'Windows':
         # Add tools and lib directories to PATH for DLLs
         current_path = env.get('PATH', '')
-        env['PATH'] = f"{tools_dir};{lib_dir};{current_path}"
+        env['PATH'] = f"{tools_dir}{os.pathsep}{lib_dir}{os.pathsep}{current_path}"
     elif os_name == 'Darwin':
         # Add lib directory to DYLD_LIBRARY_PATH
         current_dyld_path = env.get('DYLD_LIBRARY_PATH', '')
         if current_dyld_path:
-            env['DYLD_LIBRARY_PATH'] = f"{lib_dir}:{current_dyld_path}"
+            env['DYLD_LIBRARY_PATH'] = f"{lib_dir}{os.pathsep}{current_dyld_path}"
         else:
             env['DYLD_LIBRARY_PATH'] = str(lib_dir)
 
     return env
+
+
+def get_compressonator_environment(cli_path):
+    """
+    Get environment variables for running the Compressonator CLI.
+
+    The CLI expects its support DLLs/plugins to be discoverable relative to the
+    executable directory.
+    """
+    env = os.environ.copy()
+    cli_dir_path = Path(cli_path).parent
+    search_dirs = [
+        str(cli_dir_path),
+        str(cli_dir_path.parent),
+        str(cli_dir_path / 'plugins'),
+        str(cli_dir_path.parent / 'plugins'),
+        str(cli_dir_path / 'lib'),
+        str(cli_dir_path.parent / 'lib'),
+    ]
+    search_dirs = [path for path in search_dirs if Path(path).exists()]
+    current_path = env.get('PATH', '')
+    combined_path = os.pathsep.join(search_dirs + ([current_path] if current_path else []))
+    env['PATH'] = combined_path
+
+    current_ld_path = env.get('LD_LIBRARY_PATH', '')
+    env['LD_LIBRARY_PATH'] = os.pathsep.join(search_dirs + ([current_ld_path] if current_ld_path else []))
+
+    current_dyld_path = env.get('DYLD_LIBRARY_PATH', '')
+    env['DYLD_LIBRARY_PATH'] = os.pathsep.join(search_dirs + ([current_dyld_path] if current_dyld_path else []))
+    return env
+
+
+def build_toktx_command(toktx_path, input_path, output_path, options=None):
+    """Build the toktx command for a single encode operation."""
+    options = options or {}
+    cmd = [str(toktx_path)]
+
+    target_format = options.get('target_format', 'BASISU')
+
+    if target_format == 'ASTC':
+        cmd.extend(['--encode', 'astc'])
+        block_size = options.get('astc_block_size', '6x6')
+        cmd.extend(['--astc_blk_d', block_size])
+        cmd.extend(['--astc_quality', 'medium'])
+        compression = options.get('compression', 3)
+        cmd.extend(['--zcmp', str(compression)])
+    else:
+        fmt = options.get('format', 'ETC1S')
+        if fmt == 'UASTC':
+            cmd.extend(['--encode', 'uastc'])
+            quality = options.get('quality', 2)
+            cmd.extend(['--uastc_quality', str(quality)])
+            compression = options.get('compression', 3)
+            cmd.extend(['--zcmp', str(compression)])
+        else:
+            cmd.extend(['--encode', 'etc1s'])
+            quality = options.get('quality', 128)
+            cmd.extend(['--qlevel', str(quality)])
+            compression = options.get('compression', 1)
+            cmd.extend(['--clevel', str(compression)])
+
+    oetf = options.get('oetf', 'srgb')
+    cmd.extend(['--assign_oetf', oetf])
+
+    target_type = options.get('target_type', 'RGBA')
+    cmd.extend(['--target_type', target_type])
+
+    scale = options.get('scale', 1.0)
+    cmd.extend(['--scale', str(scale)])
+
+    if options.get('mipmaps', False):
+        cmd.append('--genmipmap')
+
+    cmd.append(str(output_path))
+    cmd.append(str(input_path))
+    return cmd
+
+
+def build_compressonator_command(cli_path, input_path, output_path, options=None):
+    """Build the Compressonator CLI command for BCn encoding."""
+    options = options or {}
+    bc_format = options.get('bc_format', 'BC7')
+
+    cmd = [
+        str(cli_path),
+        '-fd', bc_format,
+        '-EncodeWith', 'CPU',
+        '-silent',
+    ]
+
+    if options.get('mipmaps', False):
+        cmd.extend(['-mipsize', '1'])
+    else:
+        cmd.append('-nomipmap')
+
+    cmd.append(str(input_path))
+    cmd.append(str(output_path))
+    return cmd
+
+
+def is_ktx2_bytes(data):
+    """Return True when the byte string begins with the KTX2 file magic."""
+    return data[:len(KTX2_MAGIC)] == KTX2_MAGIC
+
+
+def is_ktx2_file(path):
+    """Return True when the given file appears to be a KTX2 container."""
+    try:
+        with open(path, 'rb') as f:
+            return is_ktx2_bytes(f.read(len(KTX2_MAGIC)))
+    except OSError:
+        return False
+
+
+def patch_ktx2_srgb_metadata(path):
+    """
+    Update a KTX2 file to use the sRGB vkFormat and DFD transfer function.
+
+    Compressonator's BCn CPU path emits valid KTX2, but does not tag BC1/3/7
+    output as sRGB even when the source texture should be sampled as sRGB.
+    """
+    path = Path(path)
+    data = bytearray(path.read_bytes())
+    if not is_ktx2_bytes(data):
+        return False, "Not a KTX2 file."
+
+    if len(data) < 56:
+        return False, "KTX2 header is truncated."
+
+    vk_format = int.from_bytes(data[12:16], 'little')
+    srgb_vk_format = KTX2_SRGB_VKFORMAT_MAP.get(vk_format)
+    if srgb_vk_format is None:
+        return False, f"No sRGB vkFormat mapping for {vk_format}."
+
+    dfd_offset = int.from_bytes(data[48:52], 'little')
+    dfd_length = int.from_bytes(data[52:56], 'little')
+    descriptor_block_offset = dfd_offset + 4
+    transfer_offset = descriptor_block_offset + 10
+    if dfd_offset <= 0 or dfd_length < 16 or transfer_offset >= len(data):
+        return False, "KTX2 DFD block is missing or truncated."
+
+    data[12:16] = int(srgb_vk_format).to_bytes(4, 'little')
+    data[transfer_offset] = KHR_DF_TRANSFER_SRGB
+    path.write_bytes(data)
+    return True, None
 
 
 def run_toktx(input_path, output_path, options=None):
@@ -551,59 +927,7 @@ def run_toktx(input_path, output_path, options=None):
     if not toktx_path:
         return False, "toktx tool not found. Please install KTX tools first."
 
-    options = options or {}
-
-    cmd = [str(toktx_path)]
-
-    target_format = options.get('target_format', 'BASISU')
-
-    if target_format == 'ASTC':
-        # Native ASTC compression - direct GPU upload on ASTC hardware
-        cmd.extend(['--encode', 'astc'])
-        block_size = options.get('astc_block_size', '6x6')
-        cmd.extend(['--astc_blk_d', block_size])
-        cmd.extend(['--astc_quality', 'medium'])
-        compression = options.get('compression', 3)
-        cmd.extend(['--zcmp', str(compression)])
-    else:
-        # Basis Universal (ETC1S or UASTC) - universal format
-        # Can be transcoded to BC7, ASTC, ETC2, etc. at runtime
-        fmt = options.get('format', 'ETC1S')
-        if fmt == 'UASTC':
-            cmd.extend(['--encode', 'uastc'])
-            quality = options.get('quality', 2)
-            cmd.extend(['--uastc_quality', str(quality)])
-            compression = options.get('compression', 3)
-            cmd.extend(['--zcmp', str(compression)])
-        else:
-            # ETC1S (default)
-            cmd.extend(['--encode', 'etc1s'])
-            quality = options.get('quality', 128)
-            cmd.extend(['--qlevel', str(quality)])
-            compression = options.get('compression', 1)
-            cmd.extend(['--clevel', str(compression)])
-    
-    # Transfer function
-    oetf = options.get('oetf', 'srgb')
-    cmd.extend(['--assign_oetf', oetf])
-
-    # Target type
-    target_type = options.get('target_type', 'RGBA')
-    cmd.extend(['--target_type', target_type])
-
-    # Scale
-    scale = options.get('scale', 1.0)
-    cmd.extend(['--scale', str(scale)])
-
-    # Mipmaps
-    if options.get('mipmaps', False):
-        cmd.append('--genmipmap')
-
-    # Output and input
-    cmd.append(str(output_path))
-    cmd.append(str(input_path))
-
-    print(cmd)
+    cmd = build_toktx_command(toktx_path, input_path, output_path, options)
 
     try:
         env = get_tool_environment()
@@ -624,6 +948,55 @@ def run_toktx(input_path, output_path, options=None):
         return False, "toktx timed out"
     except Exception as e:
         return False, f"Failed to run toktx: {str(e)}"
+
+
+def run_compressonator(input_path, output_path, options=None):
+    """
+    Run the Compressonator CLI to encode a source image into BCn KTX2.
+    """
+    cli_path = get_compressonator_path()
+    if not cli_path:
+        return False, "CompressonatorCLI not found. Install it and make sure it is in PATH or the add-on bin folder."
+
+    cmd = build_compressonator_command(cli_path, input_path, output_path, options)
+
+    try:
+        env = get_compressonator_environment(cli_path)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env
+        )
+
+        if result.returncode != 0:
+            return False, f"CompressonatorCLI failed: {result.stderr}"
+
+        if options and options.get('oetf') == 'srgb':
+            patched, patch_error = patch_ktx2_srgb_metadata(output_path)
+            if not patched:
+                return False, f"CompressonatorCLI produced BCn data but sRGB metadata patch failed: {patch_error}"
+
+        if not is_ktx2_file(output_path):
+            return False, "CompressonatorCLI did not produce a valid KTX2 file."
+
+        return True, None
+
+    except subprocess.TimeoutExpired:
+        return False, "CompressonatorCLI timed out"
+    except Exception as e:
+        return False, f"Failed to run CompressonatorCLI: {str(e)}"
+
+
+def run_encoder(input_path, output_path, options=None):
+    """
+    Run the appropriate encoder backend for the requested target format.
+    """
+    options = options or {}
+    if options.get('target_format') == 'BCN':
+        return run_compressonator(input_path, output_path, options)
+    return run_toktx(input_path, output_path, options)
 
 
 def run_ktx_extract(input_path, output_path):

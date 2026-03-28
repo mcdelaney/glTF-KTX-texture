@@ -190,13 +190,13 @@ def save_blender_image_to_temp(blender_image, export_settings):
         return None
 
 
-def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_level, compression_level, generate_mipmaps, export_settings, astc_block_size='6x6', oetf='srgb', target_type='RGBA', scale=1.0):
+def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_level, compression_level, generate_mipmaps, export_settings, astc_block_size='6x6', oetf='srgb', target_type='RGBA', scale=1.0, bc_format='BC7'):
     """
     Encode a glTF image to KTX2 format.
 
     Args:
         gltf_image: The gltf2_io.Image object to encode
-        target_format: 'BASISU', 'BC7', 'ASTC', or 'ETC2'
+        target_format: 'BASISU', 'BCN', or 'ASTC'
         compression_mode: 'ETC1S' or 'UASTC' (for BASISU)
         quality_level: Quality level (1-255 for ETC1S, 0-4 for UASTC)
         compression_level: Compression level (0-5 for ETC1S, 1-22 for UASTC)
@@ -237,17 +237,18 @@ def encode_image_to_ktx2(gltf_image, target_format, compression_mode, quality_le
             'oetf': oetf,
             'target_type': target_type,
             'scale': scale,
+            'bc_format': bc_format,
         }
 
         # Log the target format for debugging
         format_names = {
             'BASISU': 'Basis Universal',
             'ASTC': 'Native ASTC',
+            'BCN': f'Native {bc_format}',
         }
         export_settings['log'].info(f"Encoding to {format_names.get(target_format, target_format)}")
 
-        # Run toktx (or ktx for native formats)
-        success, error = ktx_tools.run_toktx(temp_png, temp_ktx2_path, options)
+        success, error = ktx_tools.run_encoder(temp_png, temp_ktx2_path, options)
 
         if not success:
             export_settings['log'].error(f"KTX2 encoding failed: {error}")

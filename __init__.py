@@ -24,8 +24,7 @@ The tools are automatically downloaded on first use (~7MB).
 import bpy
 import importlib
 
-# Debug: Print when module is loaded to verify code is up to date
-print("KTX2 Extension: Module loaded (version with post-process debugging)")
+from . import texture_profiles, texture_reuse
 
 
 def _reload_submodules():
@@ -33,7 +32,7 @@ def _reload_submodules():
     import sys
 
     # List of submodule names (without package prefix)
-    submodule_names = ['ktx_tools', 'ktx2_encode', 'ktx2_decode', 'ktx2_envmap_encode', 'ktx2_envmap_decode']
+    submodule_names = ['texture_profiles', 'texture_reuse', 'ktx_tools', 'ktx2_encode', 'ktx2_decode', 'ktx2_envmap_encode', 'ktx2_envmap_decode']
 
     # Get the package name (this module's package)
     package = __name__
@@ -47,7 +46,7 @@ def _reload_submodules():
 bl_info = {
     "name": "glTF KTX2 Texture Extension",
     "category": "Import-Export",
-    "version": (1, 0, 0),
+    "version": (1, 0, 12),
     "blender": (4, 0, 0),
     "location": "File > Export/Import > glTF 2.0",
     "description": "Add KTX2 texture support via KHR_texture_basisu extension",
@@ -65,7 +64,10 @@ extension_is_required = False
 
 # Track installation state
 _tools_available = None
+_bcn_tools_available = None
 _installation_in_progress = False
+_bcn_installation_in_progress = False
+_registered_panel_classes = []
 
 
 def check_tools_available(force_recheck=False):
@@ -75,6 +77,15 @@ def check_tools_available(force_recheck=False):
         from . import ktx_tools
         _tools_available = ktx_tools.are_tools_installed()
     return _tools_available
+
+
+def check_bcn_tools_available(force_recheck=False):
+    """Check if the BCn encoder backend is available."""
+    global _bcn_tools_available
+    if _bcn_tools_available is None or force_recheck:
+        from . import ktx_tools
+        _bcn_tools_available = ktx_tools.are_bcn_tools_installed()
+    return _bcn_tools_available
 
 
 class KTX2_OT_install_tools(bpy.types.Operator):
@@ -128,6 +139,59 @@ class KTX2_OT_check_installation(bpy.types.Operator):
             self.report({'INFO'}, "KTX tools are installed and ready!")
         else:
             self.report({'WARNING'}, "KTX tools are not available. Click 'Download KTX Tools' to install.")
+        return {'FINISHED'}
+
+
+class KTX2_OT_check_bcn_installation(bpy.types.Operator):
+    """Check if BCn tools are installed"""
+    bl_idname = "ktx2.check_bcn_installation"
+    bl_label = "Check BCn Installation"
+    bl_description = "Recheck if CompressonatorCLI is available"
+
+    def execute(self, context):
+        check_bcn_tools_available(force_recheck=True)
+        if check_bcn_tools_available():
+            self.report({'INFO'}, "CompressonatorCLI is installed and ready!")
+        else:
+            self.report({'WARNING'}, "CompressonatorCLI is not available. Click 'Download BCn Tools' to install.")
+        return {'FINISHED'}
+
+
+class KTX2_OT_install_bcn_tools(bpy.types.Operator):
+    """Download and install CompressonatorCLI for BCn texture support"""
+    bl_idname = "ktx2.install_bcn_tools"
+    bl_label = "Download BCn Tools"
+    bl_description = "Download CompressonatorCLI for native BCn texture encoding"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        global _bcn_installation_in_progress
+        _bcn_installation_in_progress = True
+
+        from . import ktx_tools
+
+        try:
+            self.report({'INFO'}, "Downloading BCn tools... This may take a moment.")
+
+            def progress_callback(message, percent):
+                pass
+
+            success, error = ktx_tools.install_compressonator(progress_callback)
+
+            if success:
+                check_bcn_tools_available(force_recheck=True)
+                self.report({'INFO'}, "BCn tools installed successfully!")
+            else:
+                self.report({'ERROR'}, f"Installation failed: {error}")
+                print(f"\nBCn Tools Installation Error: {error}\n")
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Installation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            _bcn_installation_in_progress = False
+
         return {'FINISHED'}
 
 class KTX2ExportCompressionETC1S(bpy.types.PropertyGroup):
@@ -190,13 +254,29 @@ class KTX2ExportFormatASTC(bpy.types.PropertyGroup):
         default='6x6'
     )
 
+
+class KTX2ExportFormatBCN(bpy.types.PropertyGroup):
+    bc_format: bpy.props.EnumProperty(
+        name="BC Format",
+        description="Native BCn texture format",
+        items=[
+            ('BC1', "BC1", "Opaque or 1-bit alpha RGB"),
+            ('BC3', "BC3", "RGBA with interpolated alpha"),
+            ('BC4', "BC4", "Single-channel red"),
+            ('BC5', "BC5", "Two-channel red/green. Best default for tangent-space normals"),
+            ('BC7', "BC7", "High quality RGB/RGBA"),
+        ],
+        default='BC7'
+    )
+
 class KTX2ExportFormat(bpy.types.PropertyGroup):
     target_format: bpy.props.EnumProperty(
         name="Target Format",
-        description="GPU texture format. Native ASTC loads directly, Basis Universal transcodes at runtime",
+        description="GPU texture format. Native formats upload directly, Basis Universal transcodes at runtime",
         items=[
             ('BASISU', "Basis Universal", "Universal format that transcodes to any GPU (BC7, ASTC, ETC2, etc.) at runtime. Best compatibility"),
             ('ASTC', "Native ASTC", "Direct GPU upload on ASTC hardware (mobile, Apple Silicon). No transcoding needed"),
+            ('BCN', "Native BCn", "Direct GPU upload on BC-capable desktop hardware. Requires CompressonatorCLI"),
         ],
         default='BASISU'
     )
@@ -234,6 +314,7 @@ class KTX2ExportFormat(bpy.types.PropertyGroup):
     )
 
     astc: bpy.props.PointerProperty(type=KTX2ExportFormatASTC)
+    bcn: bpy.props.PointerProperty(type=KTX2ExportFormatBCN)
     basisu: bpy.props.PointerProperty(type=KTX2ExportFormatBASISU)
 
 class KTX2ExportProperties(bpy.types.PropertyGroup):
@@ -247,6 +328,13 @@ class KTX2ExportProperties(bpy.types.PropertyGroup):
     normal: bpy.props.PointerProperty(type=KTX2ExportFormat)
     orm: bpy.props.PointerProperty(type=KTX2ExportFormat)
     other: bpy.props.PointerProperty(type=KTX2ExportFormat)
+    defaults_version: bpy.props.IntProperty(default=0, options={'HIDDEN'})
+
+    reuse_imported_ktx2: bpy.props.BoolProperty(
+        name="Reuse Imported KTX2",
+        description="Reuse imported external KTX2 references and skip re-encoding those textures during export",
+        default=False
+    )
 
     create_fallback: bpy.props.BoolProperty(
         name="Create Fallback",
@@ -307,6 +395,134 @@ def draw_install_tools_ui(layout):
         col.operator("ktx2.check_installation", icon='FILE_REFRESH')
         col.label(text="One-time download (~7MB)", icon='URL')
 
+
+def draw_bcn_install_tools_ui(layout):
+    """Draw the BCn tools installation UI."""
+    box = layout.box()
+    box.label(text="BCn tools required", icon='INFO')
+
+    if _bcn_installation_in_progress:
+        box.label(text="Downloading... please wait")
+        box.enabled = False
+    else:
+        col = box.column(align=True)
+        col.operator("ktx2.install_bcn_tools", icon='IMPORT')
+        col.operator("ktx2.check_bcn_installation", icon='FILE_REFRESH')
+        col.label(text="One-time download (~25MB)", icon='URL')
+
+
+def _format_state(format_props):
+    return {
+        'target_format': format_props.target_format,
+        'target_type': format_props.target_type,
+        'target_oetf': format_props.target_oetf,
+        'downsample_factor': format_props.downsample_factor,
+        'basisu_mode': format_props.basisu.compression_mode,
+        'astc_block_size': format_props.astc.astc_block_size,
+        'bc_format': format_props.bcn.bc_format,
+    }
+
+
+def ensure_export_defaults(props):
+    if props.defaults_version >= texture_profiles.EXPORT_DEFAULTS_VERSION:
+        return
+
+    for role_name in (
+        texture_profiles.ROLE_BASECOLOR,
+        texture_profiles.ROLE_NORMAL,
+        texture_profiles.ROLE_ORM,
+        texture_profiles.ROLE_OTHER,
+    ):
+        format_props = getattr(props, role_name)
+        if not texture_profiles.is_legacy_format_state(_format_state(format_props)):
+            continue
+
+        defaults = texture_profiles.get_role_defaults(role_name)
+        format_props.target_format = defaults['target_format']
+        if defaults['target_format'] == 'BCN':
+            format_props.bcn.bc_format = defaults['bc_format']
+
+    props.defaults_version = texture_profiles.EXPORT_DEFAULTS_VERSION
+
+
+def _apply_export_defaults_to_scene(scene):
+    props = getattr(scene, "KTX2ExportProperties", None)
+    if props is None:
+        return
+    ensure_export_defaults(props)
+
+
+@bpy.app.handlers.persistent
+def _apply_export_defaults_on_load(_dummy=None):
+    for scene in bpy.data.scenes:
+        _apply_export_defaults_to_scene(scene)
+
+
+def _apply_export_defaults_deferred():
+    try:
+        for scene in bpy.data.scenes:
+            _apply_export_defaults_to_scene(scene)
+    except Exception as exc:
+        print(f"KTX2 Extension: Unable to apply export defaults: {exc}")
+    return None
+
+
+def _export_uses_bcn(props):
+    return any(
+        getattr(props, role_name).target_format == 'BCN'
+        for role_name in (
+            texture_profiles.ROLE_BASECOLOR,
+            texture_profiles.ROLE_NORMAL,
+            texture_profiles.ROLE_ORM,
+            texture_profiles.ROLE_OTHER,
+        )
+    )
+
+
+def _find_blender_image_for_gltf_image(gltf_image):
+    import bpy
+
+    if not gltf_image or not getattr(gltf_image, "name", None):
+        return None
+
+    blender_image = bpy.data.images.get(gltf_image.name)
+    if blender_image is None and "." in gltf_image.name:
+        blender_image = bpy.data.images.get(gltf_image.name.rsplit(".", 1)[0])
+    return blender_image
+
+
+def _build_reused_ktx2_image(gltf_image, export_settings):
+    blender_image = _find_blender_image_for_gltf_image(gltf_image)
+    if blender_image is None:
+        return None
+
+    metadata = texture_reuse.get_image_metadata(blender_image)
+    if metadata is None:
+        return None
+
+    export_uri = texture_reuse.resolve_export_uri(
+        metadata["uri"],
+        metadata["path"],
+        export_settings.get("gltf_filepath", ""),
+    )
+    if not export_uri:
+        return None
+
+    from io_scene_gltf2.io.com import gltf2_io
+
+    name = gltf_image.name or "texture"
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+
+    return gltf2_io.Image(
+        buffer_view=None,
+        extensions=None,
+        extras=None,
+        mime_type="image/ktx2",
+        name=name,
+        uri=export_uri,
+    )
+
 def draw_format(body, props, name, display):
     header, body = body.panel(f"GLTF_addon_ktx2_exporter_{name}",  default_closed=True)
     header.label(text=display)
@@ -324,6 +540,8 @@ def draw_format(body, props, name, display):
                 body.prop(props.basisu.etc1s, 'compression_level')
         elif props.target_format == 'ASTC':
             body.prop(props.astc, 'astc_block_size')
+        elif props.target_format == 'BCN':
+            body.prop(props.bcn, 'bc_format')
         body.prop(props, 'target_type')
         body.prop(props, 'target_oetf')
         body.prop(props, 'downsample_factor')
@@ -334,27 +552,34 @@ def draw_export(context, layout):
     header.use_property_split = False
 
     props = context.scene.KTX2ExportProperties
-    #init_ktx2_export_defaults(props)
-
     header.prop(props, 'enabled')
 
-    if body is not None:
-        if not check_tools_available():
-            draw_install_tools_ui(body)
-        else:
-            draw_format(body, props.basecolor, "basecolor", "Base Color")
-            draw_format(body, props.normal, "normal", "Normal")
-            draw_format(body, props.orm, "orm", "ORM")
-            draw_format(body, props.other, "other", "Other")
+    if body is None:
+        return
 
-            body.prop(props, 'generate_mipmaps')
-            body.prop(props, 'create_fallback')
+    if not check_tools_available():
+        draw_install_tools_ui(body)
+    if _export_uses_bcn(props) and not check_bcn_tools_available():
+        draw_bcn_install_tools_ui(body)
 
-            body.separator()
-            body.label(text="Environment Map (Experimental):")
-            body.prop(props, 'export_environment_map')
-            if props.export_environment_map:
-                body.prop(props, 'envmap_resolution')
+    body.prop(props, 'reuse_imported_ktx2')
+    if props.reuse_imported_ktx2:
+        box = body.box()
+        box.label(text="Imported external .ktx2 files will be reused.", icon='INFO')
+        box.label(text="Reused textures skip KTX2 encoding and fallback export.")
+
+    draw_format(body, props.basecolor, "basecolor", "Base Color")
+    draw_format(body, props.normal, "normal", "Normal")
+    draw_format(body, props.orm, "orm", "ORM")
+    draw_format(body, props.other, "other", "Other")
+    body.prop(props, 'generate_mipmaps')
+    body.prop(props, 'create_fallback')
+
+    body.separator()
+    body.label(text="Environment Map (Experimental):")
+    body.prop(props, 'export_environment_map')
+    if props.export_environment_map:
+        body.prop(props, 'envmap_resolution')
 
 
 def draw_import(context, layout):
@@ -363,14 +588,103 @@ def draw_import(context, layout):
     header.use_property_split = False
 
     props = context.scene.KTX2ImportProperties
-
     header.prop(props, 'enabled')
 
-    if body is not None:
-        if not check_tools_available():
-            draw_install_tools_ui(body)
-        else:
-            body.prop(props, 'prefer_ktx2')
+    if body is None:
+        return
+
+    if not check_tools_available():
+        draw_install_tools_ui(body)
+    else:
+        body.prop(props, 'prefer_ktx2')
+
+
+class GLTF_PT_KTX2ExporterPanel(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = 'KTX2 Textures'
+    bl_parent_id = 'GLTF_PT_export_user_extensions'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        props = context.scene.KTX2ExportProperties
+        self.layout.prop(props, 'enabled', text='')
+
+    def draw(self, context):
+        draw_export(context, self.layout)
+
+
+class GLTF_PT_KTX2ImporterPanel(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = 'KTX2 Textures'
+    bl_parent_id = 'GLTF_PT_import_user_extensions'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        props = context.scene.KTX2ImportProperties
+        self.layout.prop(props, 'enabled', text='')
+
+    def draw(self, context):
+        draw_import(context, self.layout)
+
+
+def register_panel():
+    """Register export/import UI under Blender's glTF add-on."""
+    global _registered_panel_classes
+    unregister_panel()
+
+    try:
+        import io_scene_gltf2
+    except Exception:
+        io_scene_gltf2 = None
+
+    if io_scene_gltf2 is not None:
+        try:
+            io_scene_gltf2.exporter_extension_layout_draw[__name__] = draw_export
+        except Exception as exc:
+            print(f"KTX2 Extension: Unable to register export UI: {exc}")
+
+        try:
+            io_scene_gltf2.importer_extension_layout_draw[__name__] = draw_import
+        except Exception as exc:
+            print(f"KTX2 Extension: Unable to register import UI: {exc}")
+
+    for cls, parent_id in (
+        (GLTF_PT_KTX2ExporterPanel, 'GLTF_PT_export_user_extensions'),
+        (GLTF_PT_KTX2ImporterPanel, 'GLTF_PT_import_user_extensions'),
+    ):
+        if not hasattr(bpy.types, parent_id):
+            continue
+        try:
+            bpy.utils.register_class(cls)
+            _registered_panel_classes.append(cls)
+        except Exception as exc:
+            print(f"KTX2 Extension: Unable to register panel {cls.__name__}: {exc}")
+
+    return unregister_panel
+
+
+def unregister_panel():
+    """Unregister export/import panels if they were added."""
+    global _registered_panel_classes
+
+    for cls in reversed(_registered_panel_classes):
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception:
+            pass
+
+    try:
+        import io_scene_gltf2
+    except Exception:
+        io_scene_gltf2 = None
+
+    if io_scene_gltf2 is not None:
+        io_scene_gltf2.exporter_extension_layout_draw.pop(__name__, None)
+        io_scene_gltf2.importer_extension_layout_draw.pop(__name__, None)
+
+    _registered_panel_classes = []
 
 
 class glTF2ExportUserExtension:
@@ -386,10 +700,7 @@ class glTF2ExportUserExtension:
         """Hook called when gathering texture data for export."""
         if not self.properties.enabled:
             return
-
-        if not check_tools_available():
-            export_settings['log'].warning("KTX2 export disabled: KTX tools not installed")
-            return
+        ensure_export_defaults(self.properties)
 
         if gltf2_texture.source is None:
             return
@@ -413,69 +724,94 @@ class glTF2ExportUserExtension:
                 channels = 3
             socket_names.append(socket.name)
 
-        # Get user settings
-        format_props = self.properties.other
-        if "Base Color" in socket_names:
-            format_props = self.properties.basecolor
-        elif "Normal" in socket_names:
-            format_props = self.properties.normal
-        elif bool(set(socket_names) & set(["Metallic", "Roughness"])):
-            format_props = self.properties.orm
+        role = texture_profiles.detect_texture_role(socket_names)
+        format_props = getattr(self.properties, role)
+        resolved = texture_profiles.resolve_texture_settings(
+            socket_names,
+            channels,
+            _format_state(format_props),
+        )
 
-        # Get colorspace (srgb/linear)
-        oetf = ''
-        compression_mode = ''
-        if bool(set(socket_names) & set(["Base Color", "Emission"])):
-            oetf = 'srgb'
-            compression_mode = 'ETC1S'
-        else:
-            oetf = 'linear'
-            compression_mode = 'UASTC'
-        if not format_props.target_oetf == 'Auto':
-            oetf = format_props.target_oetf
+        if resolved['error']:
+            export_settings['log'].warning(
+                f"Skipping KTX2 encode for {getattr(gltf2_texture.source, 'name', 'unknown')}: {resolved['error']}"
+            )
+            return
 
-        # Get channels
-        types = {1: 'R', 2: 'RG', 3: 'RGB', 4: 'RGBA'}
-        target_type = types.get(channels, 'RGBA')
-        if not format_props.target_type == 'Auto':
-            target_type = format_props.target_type
+        source_image = gltf2_texture.source
 
-        # Get compression mode
-        if not format_props.basisu.compression_mode == "Auto":
-            compression_mode = format_props.basisu.compression_mode
+        if self.properties.reuse_imported_ktx2:
+            reused_ktx2_image = _build_reused_ktx2_image(source_image, export_settings)
+            if reused_ktx2_image is not None:
+                if gltf2_texture.extensions is None:
+                    gltf2_texture.extensions = {}
+
+                gltf2_texture.extensions[glTF_extension_name] = self.Extension(
+                    name=glTF_extension_name,
+                    extension={"source": reused_ktx2_image},
+                    required=True
+                )
+                gltf2_texture.source = None
+                return
+
+            export_settings['log'].warning(
+                f"Texture {getattr(source_image, 'name', 'unknown')} has no reusable external KTX2 source; falling back to normal export."
+            )
+
+        if resolved['target_format'] in ('BASISU', 'ASTC') and not check_tools_available():
+            export_settings['log'].warning("KTX2 export disabled for BasisU/ASTC: KTX tools not installed")
+            return
+
+        if resolved['target_format'] == 'BCN' and not check_bcn_tools_available():
+            export_settings['log'].warning(
+                "BCn export disabled: CompressonatorCLI not found. Install it and place it in PATH or the add-on bin folder."
+            )
+            return
 
         from . import ktx2_encode
 
-        # Get the source image
-        source_image = gltf2_texture.source
-
         # Check if we already processed this image
-        cache_key = id(source_image)
+        cache_key = (
+            id(source_image),
+            resolved['target_format'],
+            resolved['bc_format'],
+            resolved['compression_mode'],
+            resolved['oetf'],
+            resolved['target_type'],
+            format_props.astc.astc_block_size,
+            format_props.downsample_factor,
+            self.properties.generate_mipmaps,
+            format_props.basisu.uastc.quality_level,
+            format_props.basisu.uastc.compression_level,
+            format_props.basisu.etc1s.quality_level,
+            format_props.basisu.etc1s.compression_level,
+        )
         if cache_key in self._processed_images:
             ktx2_image = self._processed_images[cache_key]
         else:
             # Encode to KTX2
             quality_level = 0
             compression_level = 0
-            if compression_mode == "UASTC":
+            if resolved['compression_mode'] == "UASTC":
                 quality_level = format_props.basisu.uastc.quality_level
                 compression_level = format_props.basisu.uastc.compression_level
-            else:
+            elif resolved['target_format'] == 'BASISU':
                 quality_level = format_props.basisu.etc1s.quality_level
                 compression_level = format_props.basisu.etc1s.compression_level
 
             ktx2_image = ktx2_encode.encode_image_to_ktx2(
                 source_image,
-                format_props.target_format,
-                compression_mode,
+                resolved['target_format'],
+                resolved['compression_mode'],
                 quality_level,
                 compression_level,
                 self.properties.generate_mipmaps,
                 export_settings,
                 astc_block_size=format_props.astc.astc_block_size,
-                oetf=oetf,
-                target_type=target_type,
-                scale = 1.0 / format_props.downsample_factor
+                oetf=resolved['oetf'],
+                target_type=resolved['target_type'],
+                scale=1.0 / format_props.downsample_factor,
+                bc_format=format_props.bcn.bc_format,
             )
             if ktx2_image is None:
                 export_settings['log'].warning(
@@ -748,6 +1084,14 @@ class glTF2ImportUserExtension:
             blender_image.name = img_name
             blender_image.alpha_mode = 'CHANNEL_PACKED'
 
+            metadata = texture_reuse.capture_import_metadata(
+                gltf_img.uri,
+                getattr(gltf, "filename", None),
+            )
+            if metadata:
+                for key, value in metadata.items():
+                    blender_image[key] = value
+
             # Pack the image into the .blend file so the temp file can be deleted
             blender_image.pack()
 
@@ -797,10 +1141,13 @@ def register():
     _reload_submodules()
 
     bpy.utils.register_class(KTX2_OT_install_tools)
+    bpy.utils.register_class(KTX2_OT_install_bcn_tools)
     bpy.utils.register_class(KTX2_OT_check_installation)
+    bpy.utils.register_class(KTX2_OT_check_bcn_installation)
     bpy.utils.register_class(KTX2ExportCompressionETC1S)
     bpy.utils.register_class(KTX2ExportCompressionUASTC)
     bpy.utils.register_class(KTX2ExportFormatASTC)
+    bpy.utils.register_class(KTX2ExportFormatBCN)
     bpy.utils.register_class(KTX2ExportFormatBASISU)
     bpy.utils.register_class(KTX2ExportFormat)
     bpy.utils.register_class(KTX2ExportProperties)
@@ -809,6 +1156,12 @@ def register():
     bpy.types.Scene.KTX2ExportProperties = bpy.props.PointerProperty(type=KTX2ExportProperties)
     bpy.types.Scene.KTX2ImportProperties = bpy.props.PointerProperty(type=KTX2ImportProperties)
 
+    if _apply_export_defaults_on_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_apply_export_defaults_on_load)
+
+    bpy.app.timers.register(_apply_export_defaults_deferred, first_interval=0.0)
+
+    register_panel()
 
     # Check tools availability on load
     check_tools_available()
@@ -816,6 +1169,10 @@ def register():
 
 def unregister():
     """Unregister addon classes and UI."""
+    unregister_panel()
+
+    if _apply_export_defaults_on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_apply_export_defaults_on_load)
 
     del bpy.types.Scene.KTX2ExportProperties
     del bpy.types.Scene.KTX2ImportProperties
@@ -823,11 +1180,14 @@ def unregister():
     bpy.utils.unregister_class(KTX2ImportProperties)
     bpy.utils.unregister_class(KTX2ExportProperties)
     bpy.utils.unregister_class(KTX2ExportFormat)
+    bpy.utils.unregister_class(KTX2ExportFormatBCN)
     bpy.utils.unregister_class(KTX2ExportFormatASTC)
     bpy.utils.unregister_class(KTX2ExportFormatBASISU)
     bpy.utils.unregister_class(KTX2ExportCompressionETC1S)
     bpy.utils.unregister_class(KTX2ExportCompressionUASTC)
+    bpy.utils.unregister_class(KTX2_OT_check_bcn_installation)
     bpy.utils.unregister_class(KTX2_OT_check_installation)
+    bpy.utils.unregister_class(KTX2_OT_install_bcn_tools)
     bpy.utils.unregister_class(KTX2_OT_install_tools)
 
 
